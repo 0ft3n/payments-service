@@ -1,0 +1,115 @@
+x-app: &app
+  build: .
+  image: payments-service:latest
+  restart: unless-stopped
+  environment: &app-env
+    API_KEY: ${API_KEY:-change-me}
+    DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-payments}:${POSTGRES_PASSWORD:-payments}@postgres:5432/${POSTGRES_DB:-payments}
+    RABBITMQ_URL: amqp://${RABBITMQ_USER:-guest}:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672/
+    OUTBOX_POLL_INTERVAL: ${OUTBOX_POLL_INTERVAL:-1.0}
+    MAX_ATTEMPTS: ${MAX_ATTEMPTS:-3}
+    RETRY_BASE_DELAY: ${RETRY_BASE_DELAY:-2.0}
+    GATEWAY_MIN_DELAY: ${GATEWAY_MIN_DELAY:-2.0}
+    GATEWAY_MAX_DELAY: ${GATEWAY_MAX_DELAY:-5.0}
+    GATEWAY_SUCCESS_RATE: ${GATEWAY_SUCCESS_RATE:-0.9}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-payments}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-payments}
+      POSTGRES_DB: ${POSTGRES_DB:-payments}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  migrations:
+    <<: *app
+    restart: "no"
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  outbox-relay:
+    <<: *app
+    command: ["python", "-m", "app.outbox"]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  consumer:
+    <<: *app
+    command: ["faststream", "run", "app.consumer.main:app"]
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  # Demo-only endpoint for webhooks, see tools/webhook_receiver.py.
+  webhook-receiver:
+    <<: *app
+    command: ["uvicorn", "tools.webhook_receiver:app", "--host", "0.0.0.0", "--port", "9000"]
+    ports:
+      - "9000:9000"
+
+  tests:
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
+    image: payments-service:dev
+    profiles: ["test"]
+    command: ["pytest", "-v", "-p", "no:cacheprovider"]
+    environment:
+      API_KEY: test-key
+      TEST_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-payments}:${POSTGRES_PASSWORD:-payments}@postgres:5432/payments_test
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
