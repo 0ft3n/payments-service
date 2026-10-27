@@ -1,5 +1,7 @@
 # Payments Service
 
+[![Tests](https://github.com/0ft3n/payments-service/actions/workflows/tests.yml/badge.svg)](https://github.com/0ft3n/payments-service/actions/workflows/tests.yml)
+
 Микросервис асинхронной обработки платежей. Принимает запрос на оплату, обрабатывает его через эмулятор платёжного шлюза и сообщает клиенту результат через webhook.
 
 **Стек:** FastAPI, Pydantic v2, SQLAlchemy 2.0 (async), PostgreSQL, RabbitMQ (FastStream), Alembic, Docker Compose.
